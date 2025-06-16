@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Predicción Nivel del Agua</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #e0f7fa;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+    }
+    h1 {
+      color: #00796b;
+    }
+    .form-section {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    .form-section > * {
+      margin: 5px 10px;
+    }
+    .checkbox-group label {
+      display: inline-block;
+      margin-right: 15px;
+    }
+    button {
+      padding: 8px 16px;
+      background-color: #00796b;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #004d40;
+    }
+    #resultados {
+      margin-top: 30px;
+      width: 100%;
+      max-width: 1200px;
+    }
+    .result-column {
+      background: white;
+      border-radius: 8px;
+      padding: 10px;
+      margin: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+      flex: 1;
+      min-width: 250px;
+    }
+    .result-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-around;
+    }
+    .fecha-nivel {
+      font-size: 0.9rem;
+      padding: 4px 0;
+      border-bottom: 1px solid #eee;
+    }
+    .fecha-nivel:last-child {
+      border-bottom: none;
+    }
+    #wave-chart {
+      width: 100%;
+      height: 150px;
+      margin-top: 30px;
+      background: linear-gradient(to top, #4dd0e1 0%, #b2ebf2 100%);
+      border-radius: 12px;
+      box-shadow: inset 0 0 15px #00acc1aa;
+      position: relative;
+    }
+    svg {
+      width: 100%;
+      height: 150px;
+      overflow: visible;
+    }
+    .x-axis-label {
+      font-size: 0.75rem;
+      fill: #004d40;
+      text-anchor: middle;
+      user-select: none;
+    }
+    .grid-line {
+      stroke: #004d40aa;
+      stroke-width: 0.7;
+      stroke-dasharray: 4 3;
+    }
+    .wave-path {
+      fill-opacity: 0.4;
+      stroke-width: 0;
+    }
+    .info-text {
+      margin: 10px 0;
+      font-style: italic;
+      color: #00796b;
+    }
+  </style>
+</head>
+<body>
+
+<h1>Predicción de Nivel del Agua</h1>
+
+<div class="form-section">
+  <div class="checkbox-group">
+    <label><input type="checkbox" class="river-check" value="ayacucho" checked> Ayacucho</label>
+    <label><input type="checkbox" class="river-check" value="caicara"> Caicara</label>
+    <label><input type="checkbox" class="river-check" value="ciudad_bolivar"> Ciudad Bolívar</label>
+    <label><input type="checkbox" class="river-check" value="palua"> Palua</label>
+  </div>
+
+  <label for="days">Días a predecir:</label>
+  <input type="number" id="days" min="1" max="365" value="7" />
+
+  <button id="predict-btn">Predecir</button>
+</div>
+
+<div class="info-text">
+  Las predicciones comenzarán desde el día siguiente al último dato disponible en el sistema.
+</div>
+
+<div id="resultados" style="display:none;">
+  <div id="wave-chart">
+    <svg viewBox="0 0 700 150" preserveAspectRatio="none">
+      <g id="x-axis"></g>
+      <g id="grid-lines"></g>
+    </svg>
+  </div>
+  <div class="result-row" id="result-columns"></div>
+</div>
+
+<script>
+  const rivers = ['ayacucho', 'caicara', 'ciudad_bolivar', 'palua'];
+  const riverColors = {
+    ayacucho: '#00796b',
+    caicara: '#ff5722',
+    ciudad_bolivar: '#3f51b5',
+    palua: '#8e24aa'
+  };
+
+  const daysInput = document.getElementById('days');
+  const predictBtn = document.getElementById('predict-btn');
+  const resultadosDiv = document.getElementById('resultados');
+  const resultColumns = document.getElementById('result-columns');
+  const waveChartSvg = document.querySelector('#wave-chart svg');
+  const xAxisGroup = document.getElementById('x-axis');
+  const gridLinesGroup = document.getElementById('grid-lines');
+
+  const chartWidth = 700;
+  const chartHeight = 150;
+
+  let wavePaths = [];
+  let animationId = null;
+  let animationStart = null;
+
+  function createResultColumn(city, predictions) {
+    const col = document.createElement('div');
+    col.className = 'result-column';
+    const title = document.createElement('h3');
+    title.textContent = city.charAt(0).toUpperCase() + city.slice(1).replace('_', ' ');
+    title.style.color = riverColors[city] || '#000';
+    col.appendChild(title);
+    
+    predictions.forEach(({ fecha, predicted_level }) => {
+      const div = document.createElement('div');
+      div.className = 'fecha-nivel';
+      div.textContent = `${fecha} — Nivel: ${predicted_level.toFixed(2)}`;
+      col.appendChild(div);
+    });
+    
+    return col;
+  }
+
+  function getScaledValues(predictions, minGlobal, maxGlobal) {
+    return predictions.map(p => {
+      return ((p.predicted_level - minGlobal) / (maxGlobal - minGlobal || 1)) * 100;
+    });
+  }
+
+  function buildWavePath(scaledValues, time, amplitude, wavelength, speed) {
+    const step = chartWidth / (scaledValues.length - 1);
+    let d = `M 0 ${chartHeight}`;
+    for (let i = 0; i < scaledValues.length; i++) {
+      const x = i * step;
+      const waveOffset = amplitude * Math.sin((2 * Math.PI / wavelength) * (x + speed * time));
+      const y = chartHeight - 20 - scaledValues[i] - waveOffset;
+      d += ` L ${x} ${y}`;
+    }
+    d += ` L ${chartWidth} ${chartHeight} Z`;
+    return d;
+  }
+
+  function createWavePathElement(color) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("fill", color);
+    path.setAttribute("class", "wave-path");
+    return path;
+  }
+
+  function animateWaves(timestamp) {
+    if (!animationStart) animationStart = timestamp;
+    const elapsed = (timestamp - animationStart) / 1000;
+
+    wavePaths.forEach(({ path, scaledValues, amplitude, wavelength, speed }) => {
+      const d = buildWavePath(scaledValues, elapsed * 100, amplitude, wavelength, speed);
+      path.setAttribute("d", d);
+    });
+
+    animationId = requestAnimationFrame(animateWaves);
+  }
+
+  function createXAxisLabels(days) {
+    xAxisGroup.innerHTML = '';
+    const step = chartWidth / (days - 1);
+    for (let i = 0; i < days; i++) {
+      const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      text.setAttribute('x', i * step);
+      text.setAttribute('y', chartHeight - 5);
+      text.setAttribute('class', 'x-axis-label');
+      text.textContent = i + 1;
+      xAxisGroup.appendChild(text);
+    }
+  }
+
+  function createGridLines(days) {
+    gridLinesGroup.innerHTML = '';
+    const step = chartWidth / (days - 1);
+    for (let i = 0; i < days; i++) {
+      const x = i * step;
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute('x1', x);
+      line.setAttribute('y1', 20);
+      line.setAttribute('x2', x);
+      line.setAttribute('y2', chartHeight - 20);
+      line.setAttribute('class', 'grid-line');
+      gridLinesGroup.appendChild(line);
+    }
+  }
+
+  function stopAnimation() {
+    if (animationId) {
+      cancelAnimationFrame(animationId);
+      animationId = null;
+      animationStart = null;
+    }
+  }
+
+  predictBtn.addEventListener('click', async () => {
+    const selected = Array.from(document.querySelectorAll('.river-check:checked')).map(cb => cb.value);
+    const days = parseInt(daysInput.value, 10);
+
+    if (!selected.length) return alert("Selecciona al menos un río.");
+    if (!Number.isInteger(days) || days < 1 || days > 365) return alert("Días inválidos.");
+
+    try {
+      const res = await fetch('/api/predict-multiple', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cities: selected,
+          days
+        })
+      });
+      const data = await res.json();
+
+      if (!res.ok) return alert("Error: " + (data.error || "Falló la predicción."));
+      if (!data.predictions) return alert("Error: datos de predicción no encontrados.");
+
+      // Clear previous results and animation
+      resultColumns.innerHTML = '';
+      wavePaths.forEach(({ path }) => path.remove());
+      wavePaths = [];
+      stopAnimation();
+
+      // Calculate global min and max for scaling
+      let allLevels = [];
+      for (const city of selected) {
+        const preds = data.predictions[city];
+        preds.forEach(p => allLevels.push(p.predicted_level));
+      }
+      const minGlobal = Math.min(...allLevels);
+      const maxGlobal = Math.max(...allLevels);
+
+      // Create result columns and wave paths
+      for (const city of selected) {
+        const preds = data.predictions[city];
+        resultColumns.appendChild(createResultColumn(city, preds));
+        
+        const scaledValues = getScaledValues(preds, minGlobal, maxGlobal);
+        const path = createWavePathElement(riverColors[city] || '#000');
+        const amplitude = 5 + Math.random();
+        const wavelength = 200 + Math.random() * 100;
+        const speed = 0.5 + Math.random() * 0.5;
+        wavePaths.push({ path, scaledValues, amplitude, wavelength, speed });
+        waveChartSvg.appendChild(path);
+      }
+
+      createXAxisLabels(days);
+      createGridLines(days);
+      resultadosDiv.style.display = 'block';
+
+      animationId = requestAnimationFrame(animateWaves);
+    } catch (e) {
+      alert("Error: " + e.message);
+    }
+  });
+</script>
+
+</body>
+</html>
