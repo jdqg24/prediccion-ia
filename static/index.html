@@ -117,6 +117,9 @@
     <label><input type="checkbox" class="river-check" value="palua"> Palua</label>
   </div>
 
+  <label for="start-date">Fecha de inicio:</label>
+  <input type="date" id="start-date" />
+
   <label for="days">Días a predecir:</label>
   <input type="number" id="days" min="1" max="365" value="7" />
 
@@ -124,7 +127,7 @@
 </div>
 
 <div class="info-text">
-  Las predicciones comenzarán desde el día siguiente al último dato disponible en el sistema.
+  Las predicciones comenzarán desde la fecha seleccionada. Solo se mostrará el rango solicitado.
 </div>
 
 <div id="resultados" style="display:none;">
@@ -147,6 +150,7 @@
   };
 
   const daysInput = document.getElementById('days');
+  const startDateInput = document.getElementById('start-date');
   const predictBtn = document.getElementById('predict-btn');
   const resultadosDiv = document.getElementById('resultados');
   const resultColumns = document.getElementById('result-columns');
@@ -162,22 +166,28 @@
   let animationStart = null;
 
   function createResultColumn(city, predictions) {
-    const col = document.createElement('div');
-    col.className = 'result-column';
-    const title = document.createElement('h3');
-    title.textContent = city.charAt(0).toUpperCase() + city.slice(1).replace('_', ' ');
-    title.style.color = riverColors[city] || '#000';
-    col.appendChild(title);
-    
-    predictions.forEach(({ fecha, predicted_level }) => {
-      const div = document.createElement('div');
-      div.className = 'fecha-nivel';
-      div.textContent = `${fecha} — Nivel: ${predicted_level.toFixed(2)}`;
-      col.appendChild(div);
-    });
-    
-    return col;
-  }
+  const col = document.createElement('div');
+  col.className = 'result-column';
+  const title = document.createElement('h3');
+  title.textContent = city.charAt(0).toUpperCase() + city.slice(1).replace('_', ' ');
+  title.style.color = riverColors[city] || '#000';
+  col.appendChild(title);
+
+  predictions.forEach(({ fecha, predicted_level, real_level }) => {
+    const div = document.createElement('div');
+    div.className = 'fecha-nivel';
+
+    let text = `${fecha} — Nivel: ${predicted_level.toFixed(2)}`;
+    if (real_level !== undefined && real_level !== null) {
+      text += ` (Real: ${real_level.toFixed(2)})`;
+    }
+
+    div.textContent = text;
+    col.appendChild(div);
+  });
+
+  return col;
+}
 
   function getScaledValues(predictions, minGlobal, maxGlobal) {
     return predictions.map(p => {
@@ -256,8 +266,10 @@
   predictBtn.addEventListener('click', async () => {
     const selected = Array.from(document.querySelectorAll('.river-check:checked')).map(cb => cb.value);
     const days = parseInt(daysInput.value, 10);
+    const startDate = startDateInput.value;
 
     if (!selected.length) return alert("Selecciona al menos un río.");
+    if (!startDate) return alert("Selecciona una fecha de inicio.");
     if (!Number.isInteger(days) || days < 1 || days > 365) return alert("Días inválidos.");
 
     try {
@@ -266,7 +278,8 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           cities: selected,
-          days
+          days,
+          start_date: startDate
         })
       });
       const data = await res.json();
@@ -274,13 +287,11 @@
       if (!res.ok) return alert("Error: " + (data.error || "Falló la predicción."));
       if (!data.predictions) return alert("Error: datos de predicción no encontrados.");
 
-      // Clear previous results and animation
       resultColumns.innerHTML = '';
       wavePaths.forEach(({ path }) => path.remove());
       wavePaths = [];
       stopAnimation();
 
-      // Calculate global min and max for scaling
       let allLevels = [];
       for (const city of selected) {
         const preds = data.predictions[city];
@@ -289,11 +300,10 @@
       const minGlobal = Math.min(...allLevels);
       const maxGlobal = Math.max(...allLevels);
 
-      // Create result columns and wave paths
       for (const city of selected) {
         const preds = data.predictions[city];
         resultColumns.appendChild(createResultColumn(city, preds));
-        
+
         const scaledValues = getScaledValues(preds, minGlobal, maxGlobal);
         const path = createWavePathElement(riverColors[city] || '#000');
         const amplitude = 5 + Math.random();

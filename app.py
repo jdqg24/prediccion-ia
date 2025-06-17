@@ -26,7 +26,6 @@ def load_scaler_and_model(rio):
     return scaler, model
 
 def get_last_values(rio):
-    # Obtener los últimos SEQUENCE_LENGTH valores no nulos para el río
     river_data = df[['fecha', rio]].dropna()
     last_values = river_data[rio].tail(SEQUENCE_LENGTH).values
     last_date = river_data['fecha'].tail(1).iloc[0]
@@ -65,9 +64,15 @@ def predict_multiple():
         data = request.get_json(force=True)
         rios = data.get('cities')
         days = int(data.get('days', 7))
+        start_date_str = data.get('start_date')  # formato "YYYY-MM-DD"
 
         if not rios:
             return jsonify({'error': 'Debe enviar "cities"'}), 400
+
+        if not start_date_str:
+            return jsonify({'error': 'Debe enviar "start_date" en formato YYYY-MM-DD'}), 400
+
+        start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
 
         predictions_all = {}
         start_dates = {}
@@ -77,6 +82,37 @@ def predict_multiple():
             if scaler is None or model is None:
                 return jsonify({'error': f'Modelo o scaler para el río "{rio}" no encontrados.'}), 404
 
+            initial_values, last_date = get_last_values(rio)
+            river_data = df[['fecha', rio]].dropna().sort_values('fecha')
+
+            if start_date < last_date:
+                # Predicción hacia atrás
+                days_to_predict_back = (last_date - start_date).days
+                available_past = river_data[river_data['fecha'] < last_date].tail(SEQUENCE_LENGTH)
+
+                if len(available_past) < SEQUENCE_LENGTH:
+                    return jsonify({'error': f'No hay suficientes datos anteriores para predecir hacia atrás para el río "{rio}".'}), 400
+
+                input_values = available_past[rio].values[::-1]  # invertir
+                pred_backwards = predict_sequence(scaler, model, input_values, days_to_predict_back)
+                pred_backwards = pred_backwards[::-1]  # revertimos orden
+
+                predictions = []
+                for i in range(days_to_predict_back):
+                    date_pred = last_date - timedelta(days=i+1)
+                    real_val_row = river_data[river_data['fecha'] == date_pred]
+                    real_val = real_val_row[rio].values[0] if not real_val_row.empty else None
+                    predictions.append({
+                        'fecha': date_pred.strftime("%Y-%m-%d"),
+                        'predicted_level': float(pred_backwards[i]),
+                        'real_level': float(real_val) if real_val is not None else None
+                    })
+
+                predictions_all[rio] = predictions[::-1]
+                start_dates[rio] = start_date
+                continue
+
+            # Predicción hacia adelante (como antes)
             initial_values, last_date = get_last_values(rio)
             start_dates[rio] = last_date + timedelta(days=1)
 
